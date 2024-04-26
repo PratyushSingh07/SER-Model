@@ -20,6 +20,10 @@ from werkzeug.utils import secure_filename
 app = Flask(__name__)
 app.secret_key = b'(\xee\x00\xd4\xce"\xcf\xe8@\r\xde\xfc\xbdJ\x08W'
 app.config['UPLOAD_FOLDER'] = ''
+app.config['ALLOWED_EXTENSIONS'] = {'wav', 'mp3'}
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 ################################################################################
 ################################## INDEX #######################################
@@ -58,81 +62,49 @@ def audio_recording():
     return render_template('audio.html', display_button=True)
 
 
-# Audio Dash
-@app.route('/audio_dash', methods=["GET", "POST"])
+@app.route('/audio_dash', methods=["POST", "GET"])
 def audio_dash():
-    prob = []  # Initialize prob as an empty list
-
+    major_emotion = None
+    emotion_dist = []
+    
     if request.method == 'POST':
-        # Check if the post request has the file part
-        if 'file' not in request.files:
-            flash('No file part')
-            model_sub_dir = os.path.join('Models', 'audio.hdf5')
-            SER = speechEmotionRecognition(model_sub_dir)
-            emotions, timestamp = SER.predict_emotion_from_file(file_path, chunk_step=1*16000)
-            # Calculate probabilities or any other necessary processing
-             # Export predicted emotions to .txt format
-            SER.prediction_to_csv(emotions, os.path.join("static/js/db", "audio_emotions.txt"), mode='w')
-            # Sample calculation for demonstration
-            # Get most common emotion during the interview
-            major_emotion = max(set(emotions), key=emotions.count)
-            # Calculate emotion distribution
-            emotion_dist = [int(100 * emotions.count(emotion) / len(emotions)) for emotion in SER._emotion.values()]
-            prob = emotion_dist  # Update prob with the calculated emotion distribution
-            df = pd.DataFrame(emotion_dist, index=SER._emotion.values(), columns=['VALUE']).rename_axis('EMOTION')
-            df.to_csv(os.path.join('static/js/db','audio_emotions_dist.txt'), sep=',')
-            return redirect(request.url)
+        file = request.files.get('file')
         
-        file = request.files['file']
-        
-        # If the user does not select a file, the browser may submit an empty part without a filename
-        if file.filename == '':
-            flash('No selected file')
-            model_sub_dir = os.path.join('Models', 'audio.hdf5')
-            SER = speechEmotionRecognition(model_sub_dir)
-            emotions, timestamp = SER.predict_emotion_from_file(file_path, chunk_step=1*16000)
-            # Calculate probabilities or any other necessary processing
-             # Export predicted emotions to .txt format
-            SER.prediction_to_csv(emotions, os.path.join("static/js/db", "audio_emotions.txt"), mode='w')
-            # Sample calculation for demonstration
-            # Get most common emotion during the interview
-            major_emotion = max(set(emotions), key=emotions.count)
-            # Calculate emotion distribution
-            emotion_dist = [int(100 * emotions.count(emotion) / len(emotions)) for emotion in SER._emotion.values()]
-            prob = emotion_dist  # Update prob with the calculated emotion distribution
-            df = pd.DataFrame(emotion_dist, index=SER._emotion.values(), columns=['VALUE']).rename_axis('EMOTION')
-            df.to_csv(os.path.join('static/js/db','audio_emotions_dist.txt'), sep=',')
-            return redirect(request.url)
-        
-        if file:
-            # Save the uploaded file
+        if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             file.save(file_path)
-            flash('File successfully uploaded')
-
-            # Perform calculations on the uploaded file
-            # For example, you can pass the file_path to your SER object for analysis
+            
+            # Proceed with emotion recognition
             model_sub_dir = os.path.join('Models', 'audio.hdf5')
             SER = speechEmotionRecognition(model_sub_dir)
-            emotions, timestamp = SER.predict_emotion_from_file(file_path, chunk_step=1*16000)
-            # Calculate probabilities or any other necessary processing
-             # Export predicted emotions to .txt format
-            SER.prediction_to_csv(emotions, os.path.join("static/js/db", "audio_emotions.txt"), mode='w')
-            # Sample calculation for demonstration
-            # Get most common emotion during the interview
-            major_emotion = max(set(emotions), key=emotions.count)
-            # Calculate emotion distribution
-            emotion_dist = [int(100 * emotions.count(emotion) / len(emotions)) for emotion in SER._emotion.values()]
-            prob = emotion_dist  # Update prob with the calculated emotion distribution
-            df = pd.DataFrame(emotion_dist, index=SER._emotion.values(), columns=['VALUE']).rename_axis('EMOTION')
-            df.to_csv(os.path.join('static/js/db','audio_emotions_dist.txt'), sep=',')
-            print(prob)
-            # Redirect to another page or render a template with the calculated values
-            # return render_template('audio_dash.html', prob=prob, emo=major_emotion)
-            return jsonify(pro = prob, emotion = major_emotion)
+            
+            # Predict emotion in voice
+            step = 1  # in seconds
+            sample_rate = 16000  # in Hz
+            emotions, timestamp = SER.predict_emotion_from_file(file_path, chunk_step=step * sample_rate)
+            
+            # Get most common emotion during the recording
+            if emotions:
+                major_emotion = max(set(emotions), key=emotions.count)
+                emotion_dist = [int(100 * emotions.count(emotion) / len(emotions)) for emotion in SER._emotion.values()]
+            
+                # Export emotion distribution for visualization
+                df = pd.DataFrame(emotion_dist, index=SER._emotion.values(), columns=['VALUE']).rename_axis('EMOTION')
+                dist_file_path = os.path.join('static/js/db', 'audio_emotions_dist.txt')
+                df.to_csv(dist_file_path, sep=',')
+                
+                # Sleep (might not be necessary in production)
+                time.sleep(0.5)
+        else:
+            if file:
+                return render_template('audio_dash.html', error="Unsupported file type")
+            else:
+                return render_template('audio_dash.html', error="No file selected or file is not valid")
 
-    return render_template('audio_dash.html', prob=[])
+    # Handle both GET requests and unsuccessful POST requests.
+    return render_template('audio_dash.html', emo=major_emotion, prob=emotion_dist)
+
 
 
 if __name__ == '__main__':
